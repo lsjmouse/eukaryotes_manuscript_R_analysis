@@ -1,0 +1,957 @@
+---
+title: "SmallTS_Euk"
+author: "Songjun"
+date: "2023-12-14"
+output: html_document
+---
+
+
+
+```{r load package}
+
+library(ggplot2)
+library(edgeR)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(feather)
+library(dtplyr)
+library(tidyverse)
+library(R.utils)
+library(purrr)
+library(reshape2)
+library(vegan)
+library(SRS)
+library(emmeans)
+library(ggpubr)
+library(tibble)
+library(ANCOMBC)
+library(plotrix)
+library(patchwork)
+
+#many different colours
+library(RColorBrewer)
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+
+```
+
+
+```{r load data}
+
+# create a table with taxonomy categories in each column
+tax <- read.table("phylodb_taxonomy.out", sep = "\t", header = TRUE, fill=TRUE)
+tax <- tax[,-c(1,3,5,6,7,8)]
+tax <- 
+  tax %>% 
+  separate('full_classification',c("Domain","Phylum", "Class", "Order", "Family", "Genus", "Species"), ";") %>%  mutate(
+    Domain = ifelse(is.na(Domain)   | Domain == '',  sprintf("%s uncl.", Domain), 
+                    Domain),
+    Phylum = ifelse(is.na(Phylum)   | Phylum == '',  sprintf("%s uncl.", Phylum), 
+                    Phylum),
+    Class = ifelse(is.na(Class)     | Class == '',   sprintf("%s uncl.", str_remove(Phylum, 
+                                                                                    ' unclassified')), Class),
+    Order = ifelse(is.na(Order)     | Order == '',   sprintf("%s uncl.", str_remove(Class, 
+                                                                                    ' unclassified')),  Order),
+    Family = ifelse(is.na(Family)   | Family == '',  sprintf("%s uncl.", str_remove(Order, 
+                                                                                    ' unclassified')),  Family),
+    Genus = ifelse(is.na(Genus)     | Genus == '',   sprintf("%s uncl.", str_remove(Family, 
+                                                                                    ' unclassified')), Genus),
+    Species = ifelse(is.na(Species) | Species == '', sprintf("%s uncl.", str_remove(Genus, 
+                                                                                    ' unclassified')),  Species)
+  )
+
+Duplicate_tax<-tax[duplicated(tax$transcript_name),]
+duplicate_id<-as.numeric(row.names.data.frame(Duplicate_tax))
+tax_remove_duplicate<-tax[-duplicate_id,]
+
+euk_tax_contigs_count<-tax_remove_duplicate[tax_remove_duplicate$Domain=="Eukaryota",]
+
+
+# Create an empty table containing the columns we will need
+counts <- tibble::tibble(sample = character(), geneid = character(), count = integer())
+
+# Loop over the tsv files in the ../data directory, read, modify and append to counts - change names to fit your files
+for ( f in Sys.glob("~/Desktop/Linnaeus University/small TS/smallTS_output/R_test/transdecoder_featurecounts_output/new_counts/*.txt")) {
+  s <- basename(f) %>% sub('.sorted.*', '', .)
+  counts <- counts %>% 
+    union(
+      read_delim(
+        f, "\t", escape_double = FALSE, comment = "#",  trim_ws = TRUE,
+        col_types = cols(
+          .default = col_integer(), Geneid = col_character(),
+          Chr = col_character(), Strand = col_character(),
+          Start = col_character(), End = col_character()
+        )
+      ) %>%
+      rename(count = 7) %>%
+      transmute(sample = s, geneid = Geneid, count)
+    )
+}
+
+a<-substring(counts$geneid,5)
+counts$geneid<-a
+rm(a)
+
+
+KEGGlist <- read.delim("functional_annotation/new_ko00001_ed_with_seperate_info.txt")
+
+KO_annotated<-read.delim("functional_annotation/phylodb_KO_list.txt", header = FALSE )
+colnames(KO_annotated)[1]<-"geneid"
+colnames(KO_annotated)[2]<-"KO"
+KO_annotated$KO[KO_annotated$KO == ""]<-"Not_annotated"
+KO_annotated$KO[KO_annotated$KO == "NA"]<-"Not_annotated"
+
+#create relative abundance table
+
+colnames(tax_remove_duplicate)[1]<-"geneid"
+relative_abundance_table<-left_join(counts,tax_remove_duplicate,by="geneid")
+relative_abundance_table<-relative_abundance_table%>%
+  group_by(sample)%>%
+  mutate(relab=count/sum(count)) %>%
+  ungroup()
+#rename relab
+colnames(relative_abundance_table)[11]<-"relative_abundance"
+#replace NA Domain to no_annotated
+relative_abundance_table$Domain<-relative_abundance_table$Domain%>% replace_na('not_annotated')
+relative_abundance_table$Domain[relative_abundance_table$Domain == " uncl."]<-"not_annotated"
+
+#load matadata
+metadata<-read.delim("../../meta_metaT.tsv")
+
+metadata$month<-factor(metadata$month,levels = c("may","june","november","march"))
+
+# Replace bay name with proper name
+metadata[metadata=="CONTROL"] <- "Control"
+metadata[metadata=="TEMP_AFFECT"] <- "Heated"
+
+metadata$year_month<-c(rep("May 2018",6),rep("June 2018",6),rep("November 2018",6),rep("March 2019",6))
+
+metadata$year_month<-factor(metadata$year_month,levels = c("May 2018","June 2018","November 2018","March 2019"))
+
+colnames(metadata)[1]<-"sample"
+
+
+```
+
+
+```{r domian visulization}
+
+domain_plot<-relative_abundance_table%>%
+  group_by(sample,Domain)%>%
+  summarise(Relative_abundance=sum(relative_abundance))%>%
+  left_join(metadata,by = "sample")%>%
+  ggplot(aes(x=samplingsite,  y=Relative_abundance, fill=Domain)) +
+geom_col() +
+scale_fill_manual(values = col_vector)+
+theme_bw() +
+theme(legend.position="right",text=element_text(size=20))+
+facet_wrap(~year_month, nrow=1)
+
+domain_plot
+
+ggsave("~/Desktop/domain_plot.pdf", plot = domain_plot, width = 40, height = 20,units = "cm")
+
+```
+
+
+```{r filter only eukaryotes results}
+
+eukaryota_table<-relative_abundance_table[grep("Eukaryota", relative_abundance_table$Domain),]
+
+#calculate relative abundance
+eukaryota_table<-eukaryota_table%>%
+  group_by(sample)%>%
+  mutate(relative_abundance=count/sum(count)) %>%
+  ungroup()
+
+```
+
+
+```{r cca}
+#make a wide format for eukayota relative abundance table
+
+euk_wide<-eukaryota_table %>% 
+  dplyr::select(geneid,sample, relative_abundance) %>% 
+  spread(geneid,relative_abundance, fill= 0) %>% 
+  remove_rownames() %>% 
+  column_to_rownames(var = "sample")
+
+
+#load meta_data
+meta_all <- read.csv("laura's_smallTS_meta.csv", stringsAsFactors = FALSE)
+meta_MetaT<- meta_all %>%  
+        column_to_rownames(var="sample")
+#select only metaT part
+meta_MetaT<-meta_MetaT[is.element(meta_MetaT$replicate,c("1")) ,]
+
+meta_MetaT[meta_MetaT=="CONTROL"] <- "Control"
+meta_MetaT[meta_MetaT=="TEMP_AFFECT"] <- "Heated"
+
+#change order to fit euk_wide
+row.names(euk_wide)
+meta_MetaT<- meta_MetaT[c(10,11,12,7,8,9,4,5,6,1,2,3,16,17,18,13,14,15,22,23,24,19,20,21),]
+a<-rownames(euk_wide)
+meta_MetaT$name<-a
+meta_MetaT <- meta_MetaT%>%
+        dplyr::select(-temp_sed)%>%
+        rownames_to_column("sample") %>% 
+        column_to_rownames(var="name")
+
+
+
+#PerMANOVA compare bays
+##Differences of microbial communities based on bay
+BC.dist=vegdist(euk_wide, distance="bray")
+
+adonis(BC.dist ~bay*month, strata= meta_MetaT$samplingsite, data=meta_MetaT, permutations=999)
+
+meta_MetaT<-meta_MetaT %>%
+  dplyr::select(Irontot, pH,  Phosphate, sulfate, "NO3._PW", "NO2._PW", IronII, temperature_bottom, oxygen1_bottom,OM, depth, salinity_bottom)
+
+# we have NA value in D1_jun and B1_nov and , which cause the cca plot step can't continue
+# Here I use the average of other cores of those sites in meta_all
+# for juneD, iron_total_average=10.749965, iron_2_average=8.493899, phosphate_average=279.32909
+meta_MetaT[2,1]<-10.7499965
+meta_MetaT[2,7]<-8.493899
+meta_MetaT[2,3]<-279.32909
+#for novB, no salinity_bottom value for all replicate cores
+#so use salinity from same bay same month novD and novF
+meta_MetaT[13,12]<-8.2
+
+
+
+cca_new <- cca(euk_wide ~ Irontot+pH+sulfate+NO3._PW+NO2._PW+IronII+temperature_bottom+oxygen1_bottom+OM+depth+Phosphate+salinity_bottom, meta_MetaT, scale=TRUE)
+
+summary(cca_new)
+#Proportion Explained CCA1 0.1760   CCA2 0.1713
+
+#VIF for CCA
+vif.cca_new <- vif.cca(cca_new) 
+vif.cca_new
+
+#Extract site data first
+scrs_new <- scores(cca_new, display=c("sp","wa","lc","bp","cn"))
+df_sites_new<-data.frame(scrs_new$sites,t(as.data.frame(strsplit(rownames(scrs_new$sites),"_"))))
+colnames(df_sites_new)<-c("CCA1","CCA2","sample")
+
+df_sites_new <- df_sites_new %>% inner_join(metadata, by="sample")
+
+colnames(df_sites_new)[13]<-"Month"
+p_new<-ggplot()
+p_new<-p_new+geom_point(data=df_sites_new,aes(CCA1,CCA2,colour=bay,shape=Month),size=2.5)+
+  scale_color_manual(values=c( "blue","orange"))+
+  ylim(-3,3)+
+  xlim(-3,3)+
+  theme_bw()+
+  xlab("CCA1 (17.60 %)")+
+  ylab("CCA2 (17.13 %)")
+p_new
+
+#Draw biplots
+multiplier_new <- vegan:::ordiArrowMul(scrs_new$biplot*0.5)
+
+df_arrows_new<- scrs_new$biplot*multiplier_new
+colnames(df_arrows_new)<-c("CCA1","CCA2")
+df_arrows_new=as.data.frame(df_arrows_new)
+rownames(df_arrows_new)[rownames(df_arrows_new) == "temperature_bottom"] <- "Temperature"
+rownames(df_arrows_new)[rownames(df_arrows_new) == "oxygen1_bottom"] <- "Oxygen"
+rownames(df_arrows_new)[rownames(df_arrows_new) == "salinity_bottom"] <- "Salinity"
+rownames(df_arrows_new)[rownames(df_arrows_new) == "NO3._PW"] <- "Nitrate"
+rownames(df_arrows_new)[rownames(df_arrows_new) == "NO2._PW"] <- "Nitrite"
+rownames(df_arrows_new)[rownames(df_arrows_new) == "depth"] <- "Depth"
+rownames(df_arrows_new)[rownames(df_arrows_new) == "sulfate"] <- "Sulfate"
+
+
+p_new<-p_new+geom_segment(data=df_arrows_new, aes(x = 0, y = 0, xend = CCA1, yend = CCA2),
+                 arrow = arrow(length = unit(0.2, "cm")))
+
+p_new<-p_new+geom_text(data=as.data.frame(df_arrows_new*1.3),aes(CCA1, CCA2, label = rownames(df_arrows_new)))
+p_new
+
+```
+
+
+```{r shannon'H index}
+
+inputdata<-eukaryota_table%>%
+  group_by(sample, Family) %>% 
+  summarise(counting=sum(count)) %>% 
+  ungroup()%>% 
+  spread(sample,counting, fill= 0) %>% 
+  remove_rownames() %>% 
+  column_to_rownames(var = "Family")
+
+Cmin_1 <- min(colSums(inputdata))
+Cmin_1
+
+# SRS 
+SRS_output <- SRS(data = inputdata, Cmin = Cmin_1)
+SRS_output
+
+#shannon index
+SRSshannon<- SRS_output %>%
+  t()%>%
+  data.frame()%>% 
+  rownames_to_column(var="sample")%>% 
+  plyr::ddply(~sample, function(x) {vegan::diversity(x[-1], index="shannon")}) %>%
+  dplyr::rename(shannon= V1) #Shannon 
+
+#change order 
+SRSshannon<-SRSshannon[c(7:12,1:6,13:24), ]
+#joined metadata table
+SRSshannon<-left_join(SRSshannon,metadata, by=c("sample"="sample"))
+SRSshannon$bay<-factor(SRSshannon$bay,levels = c("Heated","Control"))
+SRSshannon$month<-factor(SRSshannon$month, levels = c("may","june","november","march"))
+
+#make SD table
+SRS_shannon_melt <- SRSshannon %>% group_by(year_month,bay) %>% mutate(upper =  quantile(shannon, 0.75), lower = quantile(shannon, 0.25),mean = mean(shannon),SE=std.error(shannon))
+
+shanSRS_family<-ggplot(SRS_shannon_melt,aes(x = bay, y = mean, color = bay))+
+  geom_point(size = 2.5) +
+  labs(x = "", y = "Shannon's H index") +
+  scale_color_manual(values = c("blue","orange"))+
+  theme_bw() +
+  theme(text = element_text(size = 14)) +
+  theme(panel.grid = element_blank(),axis.text.x = element_blank())+
+  geom_errorbar(aes(ymin = mean-SE, ymax = mean+SE,,color = bay), 
+                   width =  0.25)+
+  facet_wrap(~year_month, ncol=4)
+
+shanSRS_family
+
+###Statistical approach - Alpha diversity
+B10 <- lm(shannon ~   bay * month +samplingsite , data=SRSshannon,  method="qr")
+
+##F-statistic numerator for degrees of freedom
+summary(B10)$fstatistic
+
+anova(B10)
+
+plot(B10)
+E <- resid(B10)
+hist(E)
+
+##pairwise comparison between bays at each month
+emmeans(B10, spec="bay",by="month", contr="pairwise")
+
+```
+
+```{r evenness}
+B<- SRS_output%>%
+        t()%>%
+        data.frame()%>% 
+        rownames_to_column(var="sample")%>%
+        remove_rownames()%>%
+        column_to_rownames(var="sample")
+
+H<- SRS_output %>%
+      t()%>%
+      data.frame()%>% 
+      rownames_to_column(var="sample")%>% 
+      plyr::ddply(~sample, function(x) {vegan::diversity(x[-1], index="shannon")}) %>%
+      dplyr::rename(shannon= V1)
+
+
+H<- H%>% 
+    remove_rownames()%>% 
+    column_to_rownames(var="sample")
+
+J<- H/log(specnumber(B))
+
+evenSH<- J%>% 
+  rownames_to_column(var="sample")%>%
+  left_join(metadata, by=c("sample"="sample"))
+
+# rearrange the sampling month
+evenSH<-evenSH[c(7:12,1:6,13:24), ]
+evenSH$month<-factor(evenSH$month, levels = c("may","june","november","march"))
+evenSH$bay<-factor(evenSH$bay,levels = c("Heated","Control"))
+
+# plot 
+
+ggshaneven<- evenSH %>%
+  ggplot(aes(x = bay, y = shannon)) + 
+    geom_boxplot(col=c("orange","blue","orange","blue","orange","blue","orange","blue")) +
+  labs(x = "", y = "Evenness") +
+  theme_bw() +
+  theme(text = element_text(size = 14)) +
+  theme(panel.grid = element_blank(), axis.title.x = element_text(size = 12),axis.text.x = element_text(size = 12))+
+  facet_wrap(~year_month, ncol=4)
+
+ggshaneven
+
+```
+
+
+```{r relative abundance}
+
+#all phylum
+colnames(metadata)[1]<-"sample"
+
+euk_phylum_plot<-eukaryota_table%>%
+  group_by(sample,Phylum) %>%
+  summarise(Relative_abundance_of_total_Eukaryota=sum(relative_abundance))%>%
+  left_join(metadata,by = "sample")%>%
+  ggplot(aes(x=samplingsite, y=Relative_abundance_of_total_Eukaryota, fill=Phylum)) +
+ geom_col() +
+ scale_fill_manual(values = col_vector)+
+ scale_x_discrete(limits = c("K", "L", "M","B","D","F"))+
+theme_bw() +
+theme(legend.position="right",legend.text = element_text(size=10),
+      axis.text.x=element_blank(),axis.title = element_blank())+
+facet_wrap(~year_month, nrow=1)
+
+euk_phylum_plot
+
+#Phylum Stramenopiles
+top12_family_under_stramenopiles<-subset(eukaryota_table,Phylum==" Stramenopiles")%>%
+  group_by(Family) %>%
+  summarise(Relative_abundance_of_total_Eukaryota=sum(relative_abundance)) %>%
+  top_n(12,Relative_abundance_of_total_Eukaryota)%>%
+  ungroup()
+
+eukaryota_table%>% 
+  filter(count > 0)%>%
+  subset(Phylum==" Stramenopiles")%>%
+  group_by(sample,Family) %>%
+  summarise(Relative_abundance_of_total_Eukaryota=sum(relative_abundance)) %>%
+  ungroup()%>%
+  left_join(
+    top12_family_under_stramenopiles %>% 
+      transmute(Family, top12_family = Family),
+    by = 'Family'
+  ) %>%
+  replace_na(list('top12_family' = 'Other_family'))%>%  
+  left_join(metadata,by = "sample")%>%
+  ggplot(aes(x=samplingsite, y=Relative_abundance_of_total_Eukaryota, fill=top12_family))+
+geom_col() +
+scale_fill_manual(values = col_vector)+
+scale_x_discrete(limits = c("K", "L", "M","B","D","F"))+
+ylim(0,1)+
+theme_bw() +
+   ylab("Relative abundance of Eukaryotic RNA Transcripts")+
+theme(legend.position="right",legend.text = element_text(size=10),)+
+facet_wrap(~year_month, nrow=1)
+
+#Phylum Alveolata
+
+top12_family_under_Alveloata<-subset(eukaryota_table,Phylum==" Alveolata")%>%
+  group_by(Family) %>%
+  summarise(Relative_abundance_of_total_Eukaryota=sum(relative_abundance)) %>%
+  top_n(12,Relative_abundance_of_total_Eukaryota)%>%
+  ungroup()
+
+eukaryota_table%>% 
+  filter(count > 0)%>%
+  subset(Phylum==" Alveolata")%>%
+  group_by(sample,Family) %>%
+  summarise(Relative_abundance_of_total_Eukaryota=sum(relative_abundance)) %>%
+  ungroup()%>%
+  left_join(
+    top12_family_under_Alveloata %>% 
+      transmute(Family, top12_family = Family),
+    by = 'Family'
+  ) %>%
+  replace_na(list('top12_family' = 'Other_family'))%>%  
+  left_join(metadata,by = "sample")%>%
+  ggplot(aes(x=samplingsite, y=Relative_abundance_of_total_Eukaryota, fill=top12_family))+
+geom_col() +
+scale_fill_manual(values = col_vector)+
+  scale_x_discrete(limits = c("K", "L", "M","B","D","F"))+
+ylim(0,0.3)+
+theme_bw() +
+ylab("Relative abundance of Eukaryotic RNA Transcripts")+
+theme(legend.position="right",legend.text = element_text(size=10),)+
+facet_wrap(~year_month, nrow=1)
+
+#Phylum Opisthokonta
+
+top12_family_under_Opisthokonta<-subset(eukaryota_table,Phylum==" Opisthokonta")%>%
+  group_by(Family) %>%
+  summarise(Relative_abundance_of_total_Eukaryota=sum(relative_abundance)) %>%
+  top_n(12,Relative_abundance_of_total_Eukaryota)%>%
+  ungroup()
+
+eukaryota_table%>% 
+  filter(count > 0)%>%
+  subset(Phylum==" Opisthokonta")%>%
+  group_by(sample,Family) %>%
+  summarise(Relative_abundance_of_total_Eukaryota=sum(relative_abundance)) %>%
+  ungroup()%>%
+  left_join(
+    top12_family_under_Opisthokonta %>% 
+      transmute(Family, top12_family = Family),
+    by = 'Family'
+  ) %>%
+  replace_na(list('top12_family' = 'Other_family'))%>%  
+  left_join(metadata,by = "sample")%>%
+  ggplot(aes(x=samplingsite, y=Relative_abundance_of_total_Eukaryota, fill=top12_family))+
+geom_col() +
+scale_fill_manual(values = col_vector)+
+  scale_x_discrete(limits = c("K", "L", "M","B","D","F"))+
+theme_bw()+
+ylab("Relative abundance of Eukaryotic RNA Transcripts")+
+theme(legend.position="right",legend.text = element_text(size=10),)+
+facet_wrap(~year_month, nrow=1)
+
+```
+
+
+```{r DGE analysis in edgeR, preparation and whole year level}
+
+#preparation
+#make wide count table
+#Rows represent genes or genomic features while columns represent samples.
+
+euk_count_wide<-pivot_wider(eukaryota_table[,-11], names_from = "sample", values_from = "count")
+euk_count_wide<-as.data.frame(euk_count_wide)
+rownames(euk_count_wide)<-euk_count_wide[,1]
+euk_tax_wide<-euk_count_wide[,2:8]
+euk_count_wide<-euk_count_wide[,c(15:20,9:14,21:32)]
+euk_count_wide<-as.matrix(euk_count_wide)
+
+##settle the second highest pathway list we are interested in :
+SH_pathway_selected<-c("09101 Carbohydrate metabolism",
+                       "09102 Energy metabolism",
+                       "09103 Lipid metabolism",
+                       "09121 Transcription",
+                       "09122 Translation",
+                       "09123 Folding, sorting and degradation",
+                       "09124 Replication and repair",
+                       "09131 Membrane transport",
+                       "09143 Cell growth and death",
+                       "09159 Environmental adaptation",
+                       "09171 Infectious disease: bacterial",
+                       "09174 Infectious disease: parasitic",
+                       "09181 Protein families: metabolism",
+                       "09182 Protein families: genetic information processing",
+                       "09183 Protein families: signaling and cellular processes",
+                       "09191 Unclassified: metabolism",
+                       "Not_annotated")
+
+
+#DGE analysis for whole year
+
+#select comparison group bay
+euk_bay_group <- paste(metadata$bay)
+euk_bay_group<-factor(euk_bay_group)
+table(euk_bay_group)
+
+#make DGE list
+y_euk_bay<-DGEList(euk_count_wide,group = euk_bay_group,genes = euk_tax_wide)
+
+#filtering out low counts 
+
+# filter method
+y_euk_bay$samples
+# minnimum library size 88795
+# so cutoff = 10/(88795/1,000,000)= 113, replicate is 3 for each bay_month
+
+keep<- rowSums( cpm(y_euk_bay) > 113 ) >= 3
+
+table(keep)
+#keep 1319 genes
+
+#editing the dgel object to exclude the genes
+y_filter_euk_bay <- y_euk_bay[keep, , keep.lib.size=FALSE]
+#calculate the normalisation factors
+y_filter_euk_bay <- calcNormFactors(y_filter_euk_bay)
+y_filter_euk_bay$samples
+boxplot(y_filter_euk_bay[["samples"]][["norm.factors"]])
+
+#design matrix
+design_bay<-model.matrix(~0+euk_bay_group)
+colnames(design_bay)<-levels(euk_bay_group)
+#Dispersion estimation
+y_filter_euk_bay<-estimateDisp(y_filter_euk_bay, design_bay, robust=TRUE)
+plotBCV(y_filter_euk_bay)
+#The estimation of QL dispersions
+fit_bay<- glmQLFit(y_filter_euk_bay, design_bay, robust=TRUE)
+head(fit_bay$coefficients)
+plotQLDisp(fit_bay)
+summary(fit_bay$df.prior)
+
+
+#differential expression
+convswarm<-makeContrasts(contrast="Control-Heated", levels=design_bay)
+
+res <- glmQLFTest(fit_bay, contrast=convswarm)
+topTags(res)
+is.de <- decideTestsDGE(res)
+summary(is.de)
+
+#Differential expression relative to a fold-change threshold
+tr_bay<- glmTreat(fit_bay, contrast=convswarm, lfc=log2(1.5))
+topTags(tr_bay)
+is.de <- decideTestsDGE(tr_bay)
+summary(is.de)
+
+#select DE genes for the whole year
+DE_genes_whole_year<-topTags(tr_bay,n = Inf, p = 0.05)$table
+DE_genes_whole_year <- tibble::rownames_to_column(DE_genes_whole_year, "geneid")
+DE_genes_whole_year <-left_join(DE_genes_whole_year,KO_annotated,by="geneid")
+DE_genes_whole_year$KO[is.na(DE_genes_whole_year$KO)]<- "Not_annotated"
+DE_genes_whole_year<-left_join(DE_genes_whole_year,KEGGlist,by="KO")
+DE_genes_whole_year$bay <- with(DE_genes_whole_year, ifelse(logFC > 0, 'Control',
+                        'Heated'))
+DE_genes_whole_year$Secondhighest[is.na(DE_genes_whole_year$Secondhighest)]<- "Not_annotated"
+
+#create order_genename
+DE_genes_whole_year$gene_name[is.na(DE_genes_whole_year$gene_name)]<- "Not_annotated"
+DE_genes_whole_year$order_genename<-paste(DE_genes_whole_year$Order, DE_genes_whole_year$gene_name, sep="-")
+
+#logFC plot
+fc_plot<-DE_genes_whole_year[DE_genes_whole_year$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = logFC, y = order_genename, color=bay)) +
+  geom_point()+
+  scale_color_manual(values=c( "blue","orange"))+
+  theme_classic()+
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.title.x = element_text(vjust = 35))
+fc_plot
+
+#pathwy group
+path_plot<-DE_genes_whole_year[DE_genes_whole_year$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = Secondhighest, y = order_genename)) +
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  geom_point(shape=13,size=4)+ 
+  theme_classic()+
+  #scale_x_discrete(position = "top")+
+  theme(axis.text.x = element_text(angle = 30, hjust=1,vjust = 1, size = 7),
+        axis.title.x = element_blank())
+
+path_plot
+
+whole_year_plot<-path_plot+fc_plot+
+  plot_layout(widths=c(1,2))
+
+
+```
+
+```{r DGE analysis for each month, prepartion}
+#preparation
+#select comparison group site+month
+Bay_Month_group <- paste(metadata$bay, metadata$month, sep=".")
+Bay_Month_group<-factor(Bay_Month_group)
+table(Bay_Month_group)
+
+#make new DGE list
+y_month_bay<-DGEList(euk_count_wide,group = Bay_Month_group,genes = euk_tax_wide)
+
+#filter method
+y_month_bay$samples
+# minnimum library size 88795
+# so cutoff = 10/(88795/1,000,000)= 113, replicate is 3 for each season_bay
+
+keep_genes <- rowSums( cpm(y_month_bay) > 113 ) >= 3
+table(keep_genes)
+
+#editing the dgel object to exclude the genes
+y_filter_month_bay <- y_month_bay[keep_genes, , keep.lib.size=FALSE]
+#calculate the normalisation factors
+y_filter_month_bay <- calcNormFactors(y_filter_month_bay)
+y_filter_month_bay$samples
+boxplot(y_filter_month_bay[["samples"]][["norm.factors"]])
+
+design_month<- model.matrix(~0+Bay_Month_group)
+colnames(design_month) <- levels(Bay_Month_group)
+
+#Dispersion estimation
+y_filter_month_bay<- estimateDisp(y_filter_month_bay, design_month, robust=TRUE)
+plotBCV(y_filter_month_bay)
+
+#The estimation of QL dispersions 
+fit_month<- glmQLFit(y_filter_month_bay, design_month, robust=TRUE)
+head(fit_month$coefficients)
+plotQLDisp(fit_month)
+summary(fit_month$df.prior)
+
+
+```
+
+```{r DGE May}
+
+may_vs<-makeContrasts(contrast="Control.may-Heated.may", levels=design_month)
+res <- glmQLFTest(fit_month, contrast=may_vs)
+topTags(res)
+is.de <- decideTestsDGE(res)
+summary(is.de)
+plotMD(res, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+#Differential expression relative to a fold-change threshold (>1.5)
+tr_may_new<- glmTreat(fit_month, contrast=may_vs, lfc=log2(1.5))
+#The top DE genes can be viewed with topTags:
+topTags(tr_may_new)
+#The total number of DE genes identified at an FDR of 5% can be shown with decideTestsDGE
+is.de <- decideTestsDGE(tr_may_new)
+summary(is.de)
+plotMD(tr_may_new, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+DE_genes_may<-topTags(tr_may_new,n = Inf, p = 0.05)$table
+DE_genes_may <- tibble::rownames_to_column(DE_genes_may, "geneid")
+DE_genes_may <-left_join(DE_genes_may,KO_annotated,by="geneid")
+DE_genes_may$KO[is.na(DE_genes_may$KO)]<- "Not_annotated"
+DE_genes_may<-left_join(DE_genes_may,KEGGlist,by="KO")
+DE_genes_may$Secondhighest[is.na(DE_genes_may$Secondhighest)]<- "Not_annotated"
+#create order_genename
+DE_genes_may$gene_name[is.na(DE_genes_may$gene_name)]<- "Not_annotated"
+DE_genes_may$order_genename<-paste(DE_genes_may$Order, DE_genes_may$gene_name, sep="-")
+DE_genes_may$bay <- with(DE_genes_may, ifelse(logFC > 0, 'Control',
+                        'Heated'))
+
+#logFC plot
+fc_plot<-DE_genes_may[DE_genes_may$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = logFC, y = order_genename, color=bay)) +
+  geom_point()+
+  scale_color_manual(values=c( "blue","orange"))+
+  theme_classic()+
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.title.x = element_text(vjust = 35))
+fc_plot
+
+#pathwy group
+path_plot<-DE_genes_may[DE_genes_may$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = Secondhighest, y = order_genename)) +
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  geom_point(shape=13,size=4)+ 
+  theme_classic()+
+  #scale_x_discrete(position = "top")+
+  theme(axis.text.x = element_text(angle = 30, hjust=1,vjust = 1, size = 7),
+        axis.title.x = element_blank())
+path_plot
+
+may_plot<-path_plot+fc_plot+
+  plot_layout(widths=c(1,2))
+
+
+```
+
+```{r DGE June}
+
+june_vs<-makeContrasts(contrast="Control.june-Heated.june", levels=design_month)
+res <- glmQLFTest(fit_month, contrast=june_vs)
+topTags(res)
+is.de <- decideTestsDGE(res)
+summary(is.de)
+
+plotMD(res, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+
+#Differential expression relative to a fold-change threshold (>1.5)
+
+tr_june_new<- glmTreat(fit_month, contrast=june_vs, lfc=log2(1.5))
+#The top DE genes can be viewed with topTags:
+topTags(tr_june_new)
+#The total number of DE genes identified at an FDR of 5% can be shown with decideTestsDGE
+is.de <- decideTestsDGE(tr_june_new)
+summary(is.de)
+plotMD(tr_june_new, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+DE_genes_june<-topTags(tr_june_new,n = Inf, p = 0.05)$table
+DE_genes_june <- tibble::rownames_to_column(DE_genes_june, "geneid")
+DE_genes_june <-left_join(DE_genes_june,KO_annotated,by="geneid")
+DE_genes_june$KO[is.na(DE_genes_june$KO)]<- "Not_annotated"
+DE_genes_june<-left_join(DE_genes_june,KEGGlist,by="KO")
+DE_genes_june$Secondhighest[is.na(DE_genes_june$Secondhighest)]<- "Not_annotated"
+#create order_genename
+DE_genes_june$gene_name[is.na(DE_genes_june$gene_name)]<- "Not_annotated"
+DE_genes_june$order_genename<-paste(DE_genes_june$Order, DE_genes_june$gene_name, sep="-")
+DE_genes_june$bay <- with(DE_genes_june, ifelse(logFC > 0, 'Control',
+                        'Heated'))
+
+#logFC plot
+fc_plot<-DE_genes_june[DE_genes_june$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = logFC, y = order_genename, color=bay)) +
+  geom_point()+
+  scale_color_manual(values=c( "blue","orange"))+
+  theme_classic()+
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.title.x = element_text(vjust = 35))
+
+fc_plot
+
+#pathwy group
+path_plot<-DE_genes_june[DE_genes_june$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = Secondhighest, y = order_genename)) +
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  geom_point(shape=13,size=4)+ 
+  theme_classic()+
+  #scale_x_discrete(position = "top")+
+  theme(axis.text.x = element_text(angle = 30, hjust=1,vjust = 1, size = 7),
+        axis.title.x = element_blank())
+
+path_plot
+
+june_plot<-path_plot+fc_plot+
+  plot_layout(widths=c(1,2))
+
+```
+
+```{r DGE November}
+
+november_vs<-makeContrasts(contrast="Control.november-Heated.november", levels=design_month)
+res <- glmQLFTest(fit_month, contrast=november_vs)
+topTags(res)
+is.de <- decideTestsDGE(res)
+summary(is.de)
+plotMD(res, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+#Differential expression relative to a fold-change threshold (>1.5)
+
+tr_november_new<- glmTreat(fit_month, contrast=november_vs, lfc=log2(1.5))
+#The top DE genes can be viewed with topTags:
+topTags(tr_november_new)
+#The total number of DE genes identified at an FDR of 5% can be shown with decideTestsDGE
+is.de <- decideTestsDGE(tr_november_new)
+summary(is.de)
+plotMD(tr_november_new, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+DE_genes_november<-topTags(tr_november_new,n = Inf, p = 0.05)$table
+DE_genes_november <- tibble::rownames_to_column(DE_genes_november, "geneid")
+DE_genes_november <-left_join(DE_genes_november,KO_annotated,by="geneid")
+DE_genes_november$KO[is.na(DE_genes_november$KO)]<- "Not_annotated"
+DE_genes_november<-left_join(DE_genes_november,KEGGlist,by="KO")
+DE_genes_november$Secondhighest[is.na(DE_genes_november$Secondhighest)]<- "Not_annotated"
+#create order_genename
+DE_genes_november$gene_name[is.na(DE_genes_november$gene_name)]<- "Not_annotated"
+DE_genes_november$order_genename<-paste(DE_genes_november$Order, DE_genes_november$gene_name, sep="-")
+DE_genes_november$bay <- with(DE_genes_november, ifelse(logFC > 0, 'Control',
+                        'Heated'))
+
+#logFC plot
+fc_plot<-DE_genes_november[DE_genes_november$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = logFC, y = order_genename, color=bay)) +
+  geom_point()+
+  scale_color_manual(values=c( "blue","orange"))+
+  theme_classic()+
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.title.x = element_text(vjust = 35))
+
+fc_plot
+
+#pathwy group
+path_plot<-DE_genes_november[DE_genes_november$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = Secondhighest, y = order_genename)) +
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  geom_point(shape=13,size=4)+ 
+  theme_classic()+
+  #scale_x_discrete(position = "top")+
+  theme(axis.text.x = element_text(angle = 30, hjust=1,vjust = 1, size = 7),
+        axis.title.x = element_blank())
+path_plot
+
+november_plot<-path_plot+fc_plot+
+  plot_layout(widths=c(1,2))
+
+```
+
+```{r DGE March}
+
+march_vs<-makeContrasts(contrast="Control.march-Heated.march", levels=design_month)
+res <- glmQLFTest(fit_month, contrast=march_vs)
+topTags(res)
+is.de <- decideTestsDGE(res)
+summary(is.de)
+plotMD(res, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+#Differential expression relative to a fold-change threshold (>1.5)
+
+tr_march_new<- glmTreat(fit_month, contrast=march_vs, lfc=log2(1.5))
+#The top DE genes can be viewed with topTags:
+topTags(tr_march_new)
+#The total number of DE genes identified at an FDR of 5% can be shown with decideTestsDGE
+is.de <- decideTestsDGE(tr_march_new)
+summary(is.de)
+
+plotMD(tr_march_new, status=is.de, values=c(1,-1), col=c("blue","orange"),legend="topright")
+
+DE_genes_march<-topTags(tr_march_new,n = Inf, p = 0.05)$table
+DE_genes_march <- tibble::rownames_to_column(DE_genes_march, "geneid")
+DE_genes_march <-left_join(DE_genes_march,KO_annotated,by="geneid")
+DE_genes_march$KO[is.na(DE_genes_march$KO)]<- "Not_annotated"
+DE_genes_march<-left_join(DE_genes_march,KEGGlist,by="KO")
+DE_genes_march$Secondhighest[is.na(DE_genes_march$Secondhighest)]<- "Not_annotated"
+#create order_genename
+DE_genes_march$gene_name[is.na(DE_genes_march$gene_name)]<- "Not_annotated"
+DE_genes_march$order_genename<-paste(DE_genes_march$Order, DE_genes_march$gene_name, sep="-")
+DE_genes_march$bay <- with(DE_genes_march, ifelse(logFC > 0, 'Control',
+                        'Heated'))
+
+#logFC plot
+fc_plot<-DE_genes_march[DE_genes_march$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = logFC, y = order_genename, color=bay)) +
+  geom_point()+
+  scale_color_manual(values=c( "blue","orange"))+
+  theme_classic()+
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.title.x = element_text(vjust = 35))
+fc_plot
+
+#pathwy group
+path_plot<-DE_genes_march[DE_genes_march$Secondhighest %in% SH_pathway_selected,]%>%
+  mutate(Phylum=factor(Phylum,levels=phylum_order))%>%
+  arrange(Phylum)%>%
+  mutate(order_genename=fct_reorder(order_genename,as.integer(Phylum),.desc = TRUE))%>%
+  ggplot(aes(x = Secondhighest, y = order_genename)) +
+  geom_hline(aes(yintercept=order_genename),color="grey",linewidth=0.25)+
+  geom_point(shape=13,size=4)+ 
+  theme_classic()+
+  #scale_x_discrete(position = "top")+
+  theme(axis.text.x = element_text(angle = 30, hjust=1,vjust = 1, size = 7),
+        axis.title.x = element_blank())
+path_plot
+
+march_plot<-path_plot+fc_plot+
+  plot_layout(widths=c(1,2))
+
+```
