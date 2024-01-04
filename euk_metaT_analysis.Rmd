@@ -499,6 +499,32 @@ facet_wrap(~year_month, nrow=1)
 
 ```
 
+```{r DA analysis in ANCOMBC2}
+library(phyloseq)
+library(ANCOMBC)
+
+euk_wide_2<-eukaryota_table %>% 
+  dplyr::select(geneid,sample, count) %>% 
+  spread(sample,count, fill= 0) %>% 
+  remove_rownames() %>% 
+  column_to_rownames(var = "geneid")
+
+OTU = otu_table(euk_wide_2, taxa_are_rows = TRUE)
+
+
+euk_tax_df<-as.data.frame(euk_tax_contigs_count)
+rownames(euk_tax_df)<-NULL
+TAX = tax_table(as.matrix(euk_tax_df %>% column_to_rownames(., var="transcript_name")))
+
+SAM = sample_data(metadata%>% column_to_rownames(var="sample"))
+
+ps <- phyloseq(OTU, TAX, SAM)
+
+ps@sam_data[["group"]] <- paste(ps@sam_data[["bay"]], ps@sam_data[["month"]], sep="_")
+
+ancombc2_phylum <- ancombc2(data = ps, tax_level = "Phylum", fix_formula = "group", group="group", rand_formula=NULL, p_adj_method = "holm", n_cl = 4, prv_cut = 0.10, struc_zero=TRUE, neg_lb=TRUE, global=TRUE, pairwise=TRUE, dunnet=TRUE)
+
+```
 
 ```{r DGE analysis in edgeR, preparation and whole year level}
 
